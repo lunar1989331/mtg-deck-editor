@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MTG Deck Editor</title>
+<title>MTG Deck Editor (Unofficial Fan-Made Tool)</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Cinzel+Decorative:wght@400;700&display=swap');
@@ -77,13 +77,13 @@ footer.app-footer {
   flex-shrink: 0;
   text-align: center;
   padding: 4px 12px;
-  font-size: 0.6rem;
-  color: var(--text-muted);
+  font-size: 0.65rem;
+  color: var(--gold-dark);
   background: var(--bg-secondary);
   border-top: 1px solid var(--border);
 }
-footer.app-footer a { color: var(--text-secondary); text-decoration: none; }
-footer.app-footer a:hover { color: var(--gold); }
+footer.app-footer a { color: var(--gold); text-decoration: none; font-weight: 600; }
+footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline; }
 
 /* Main layout */
 .main-layout {
@@ -899,7 +899,7 @@ footer.app-footer a:hover { color: var(--gold); }
 
 <header>
   <h1>&#9775; MTG Deck Editor &#9775;</h1>
-  <p>ARCANE CARD FORGE</p>
+  <p>ARCANE CARD FORGE &middot; UNOFFICIAL FAN TOOL</p>
 </header>
 
 <div class="main-layout">
@@ -1042,7 +1042,7 @@ footer.app-footer a:hover { color: var(--gold); }
 </div>
 
 <footer class="app-footer">
-  Card data &amp; images provided by <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>. Not affiliated with or endorsed by Scryfall or Wizards of the Coast.
+  Unofficial fan-made tool. Card data &amp; images provided by <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>. Not affiliated with or endorsed by Scryfall or Wizards of the Coast.
 </footer>
 
 <!-- Export modal -->

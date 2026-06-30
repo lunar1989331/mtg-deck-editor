@@ -1,6 +1,8 @@
-# MTG Deck Editor
+# MTG Deck Editor (Unofficial Fan Project)
 
 A single-file, browser-based deck builder for *Magic: The Gathering*. No installation, no backend, no build step — just open the HTML file and start building.
+
+> This is an unofficial, fan-made tool. *Magic: The Gathering* is a trademark of Wizards of the Coast LLC. This project is not affiliated with, endorsed, sponsored, or specifically approved by Wizards of the Coast.
 
 ## Features
 
