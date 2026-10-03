@@ -1866,6 +1866,62 @@ function resetLegality() {
 // ============================================================
 // SAVE / LOAD
 // ============================================================
+const DECKS_KEY = 'mtg_decks';
+
+function getSavedDecks() {
+  try { return JSON.parse(localStorage.getItem(DECKS_KEY) || '{}') || {}; }
+  catch (err) { console.error('Could not read saved decks', err); return {}; }
+}
+
+// Returns true on success. Never throws (e.g. quota exceeded).
+function putSavedDecks(saved) {
+  try { localStorage.setItem(DECKS_KEY, JSON.stringify(saved)); return true; }
+  catch (err) { console.error('Could not write saved decks', err); return false; }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Slim save format: only identifiers + quantities. Full card data is re-fetched on load.
+//   { name, savedAt, v: 2, cards: [{ id, name, qty }] }
+function isLegacyDeck(deck) {
+  return !!deck && Array.isArray(deck.cards) && deck.cards.some(c => c && c.card);
+}
+
+function slimDeck(deck) {
+  return {
+    name: deck.name,
+    savedAt: deck.savedAt,
+    v: 2,
+    cards: deck.cards.map(c => c.card
+      ? { id: c.card.id, name: c.card.name, qty: c.qty }   // legacy entry (full card object)
+      : { id: c.id, name: c.name, qty: c.qty }),
+  };
+}
+
+// One-time, lossless migration of old-format saves (full Scryfall objects) to the slim format.
+// Only rewrites storage if every legacy deck converts cleanly; otherwise leaves everything untouched.
+function migrateSavedDecks() {
+  const saved = getSavedDecks();
+  const names = Object.keys(saved);
+  if (!names.some(n => isLegacyDeck(saved[n]))) return;
+  try {
+    const migrated = {};
+    names.forEach(n => {
+      const d = saved[n];
+      if (!d || !Array.isArray(d.cards)) { migrated[n] = d; return; }
+      if (!isLegacyDeck(d)) { migrated[n] = d; return; }
+      const slim = slimDeck(d);
+      if (slim.cards.some(c => !c.id && !c.name) || slim.cards.length !== d.cards.length) throw new Error(`bad deck: ${n}`);
+      migrated[n] = slim;
+    });
+    if (putSavedDecks(migrated)) console.info('Saved decks migrated to slim format');
+  } catch (err) {
+    console.error('Deck migration skipped, old saves kept as-is', err);
+  }
+}
+
 function saveDeck() {
   const name = document.getElementById('deckNameInput').value.trim();
   if (!name) { showToast('Enter a deck name'); return; }
@@ -1873,46 +1929,117 @@ function saveDeck() {
   const entries = Object.values(state.deck);
   if (!entries.length) { showToast('Deck is empty'); return; }
 
-  const saved = JSON.parse(localStorage.getItem('mtg_decks') || '{}');
+  const saved = getSavedDecks();
   saved[name] = {
     name,
     savedAt: Date.now(),
-    cards: entries.map(({ card, qty }) => ({ card, qty })),
+    v: 2,
+    cards: entries.map(({ card, qty }) => ({ id: card.id, name: card.name, qty })),
   };
-  localStorage.setItem('mtg_decks', JSON.stringify(saved));
+  if (!putSavedDecks(saved)) { showToast('Save failed: browser storage is full'); return; }
   renderSavedDecks();
   showToast(`Saved: ${name}`);
 }
 
-function loadDeck(name) {
-  const saved = JSON.parse(localStorage.getItem('mtg_decks') || '{}');
-  const deck = saved[name];
-  if (!deck) return;
+async function loadDeck(name) {
+  const deck = getSavedDecks()[name];
+  if (!deck || !Array.isArray(deck.cards)) return;
 
-  state.deck = {};
-  deck.cards.forEach(({ card, qty }) => {
-    state.deck[card.id] = { card, qty };
-  });
+  const newDeck = {};
+  const notFound = [];
+
+  if (isLegacyDeck(deck)) {
+    // Not migrated yet (e.g. storage was full): old entries already contain the full card.
+    deck.cards.forEach(({ card, qty }) => {
+      if (newDeck[card.id]) newDeck[card.id].qty += qty;
+      else newDeck[card.id] = { card, qty };
+    });
+  } else {
+    showToast('Loading...', 5000);
+    const entries = deck.cards.filter(c => c && (c.id || c.name));
+    for (let i = 0; i < entries.length; i += 75) {
+      if (i > 0) await sleep(100); // be polite to Scryfall
+      const chunk = entries.slice(i, i + 75);
+      const unresolved = [];
+      try {
+        const res = await fetch(`${API}/cards/collection`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identifiers: chunk.map(e => e.id ? { id: e.id } : { name: e.name }) }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const byId = new Map((data.data || []).filter(c => c.object === 'card').map(c => [c.id, c]));
+        chunk.forEach(e => {
+          const card = e.id && byId.get(e.id);
+          if (card) {
+            if (newDeck[card.id]) newDeck[card.id].qty += e.qty;
+            else newDeck[card.id] = { card, qty: e.qty };
+          } else unresolved.push(e);
+        });
+      } catch (err) {
+        console.error(err);
+        unresolved.push(...chunk);
+      }
+
+      // Fallback: id no longer resolves (rare) -> try by card name before giving up.
+      if (unresolved.length) {
+        await sleep(100);
+        try {
+          const res = await fetch(`${API}/cards/collection`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ identifiers: unresolved.filter(e => e.name).map(e => ({ name: e.name })) }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          const cards = (data.data || []).filter(c => c.object === 'card');
+          const matched = new Set();
+          cards.forEach(card => {
+            const keys = cardNameKeys(card);
+            const e = unresolved.find(u => u.name && !matched.has(u) && keys.has(normName(u.name)));
+            if (!e) return;
+            matched.add(e);
+            if (newDeck[card.id]) newDeck[card.id].qty += e.qty;
+            else newDeck[card.id] = { card, qty: e.qty };
+          });
+          unresolved.forEach(e => { if (!matched.has(e)) notFound.push(e.name || e.id); });
+        } catch (err) {
+          console.error(err);
+          unresolved.forEach(e => notFound.push(e.name || e.id));
+        }
+      }
+    }
+  }
+
+  if (!Object.keys(newDeck).length) {
+    showToast('Load failed: could not fetch card data');
+    if (notFound.length) showImportReport(notFound);
+    return; // keep the current deck untouched
+  }
+
+  state.deck = newDeck;
   state.legalityData = {};
   renderDeck();
   updateCharts();
   resetLegality();
   document.getElementById('deckNameInput').value = name;
   showToast(`Loaded: ${name}`);
+  if (notFound.length) showImportReport(notFound);
 }
 
 function deleteSavedDeck(name) {
   if (!confirm(`Delete deck "${name}"?`)) return;
-  const saved = JSON.parse(localStorage.getItem('mtg_decks') || '{}');
+  const saved = getSavedDecks();
   delete saved[name];
-  localStorage.setItem('mtg_decks', JSON.stringify(saved));
+  putSavedDecks(saved);
   renderSavedDecks();
   showToast(`Deleted: ${name}`);
 }
 
 function renderSavedDecks() {
   const container = document.getElementById('savedDecksList');
-  const saved = JSON.parse(localStorage.getItem('mtg_decks') || '{}');
+  const saved = getSavedDecks();
   const names = Object.keys(saved);
 
   if (!names.length) {
@@ -1922,12 +2049,13 @@ function renderSavedDecks() {
 
   container.innerHTML = names.sort((a, b) => saved[b].savedAt - saved[a].savedAt).map(name => {
     const deck = saved[name];
-    const total = deck.cards.reduce((s, e) => s + e.qty, 0);
+    const total = (deck.cards || []).reduce((s, e) => s + e.qty, 0);
+    const en = escapeHtml(name);
     return `<div class="saved-deck-item">
-      <span class="saved-deck-name" data-name="${name}">${name}</span>
+      <span class="saved-deck-name" data-name="${en}">${en}</span>
       <span class="saved-deck-count">${total}c</span>
-      <button class="icon-btn load" data-load="${name}" title="Load">&#9654;</button>
-      <button class="icon-btn del" data-delete="${name}" title="Delete">&#215;</button>
+      <button class="icon-btn load" data-load="${en}" title="Load">&#9654;</button>
+      <button class="icon-btn del" data-delete="${en}" title="Delete">&#215;</button>
     </div>`;
   }).join('');
 
@@ -2120,6 +2248,7 @@ async function importDeck(text) {
 document.addEventListener('DOMContentLoaded', () => {
   // Init charts
   updateCharts();
+  migrateSavedDecks();
   renderSavedDecks();
 
   // Search input
