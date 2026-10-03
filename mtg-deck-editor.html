@@ -569,6 +569,7 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
 }
 .btn-primary:hover { box-shadow: var(--glow); transform: translateY(-1px); }
 .btn-primary:active { transform: translateY(0); }
+.btn-primary:disabled { opacity: 0.35; cursor: default; box-shadow: none; transform: none; }
 
 .saved-decks-list { display: flex; flex-direction: column; gap: 6px; }
 .saved-deck-item {
@@ -695,6 +696,7 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  flex-wrap: wrap;
   background: var(--bg-secondary);
 }
 .deck-action-btn {
@@ -802,6 +804,25 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
   padding: 2px 0;
 }
 .price-breakdown-item span:last-child { color: #68b85a; }
+
+/* Opening hand simulator */
+.modal-box.hand-modal-box { width: 780px; }
+.hand-info {
+  display: flex; gap: 14px; flex-wrap: wrap;
+  font-size: 0.7rem; color: var(--text-secondary); letter-spacing: 1px;
+  margin-bottom: 12px;
+}
+.hand-info b { color: var(--gold); font-weight: normal; }
+.hand-grid { display: flex; flex-wrap: wrap; gap: 8px; min-height: 160px; justify-content: center; }
+.hand-card {
+  width: 128px; aspect-ratio: 488 / 680;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg-secondary); overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.65rem; color: var(--text-secondary); text-align: center; padding: 4px;
+}
+.hand-card img { width: 100%; height: 100%; display: block; }
+.hand-note { font-size: 0.65rem; color: var(--text-secondary); margin-top: 10px; text-align: center; }
 
 /* Export modal */
 .modal-backdrop {
@@ -968,6 +989,7 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
       </div>
       <div class="deck-action-bar">
         <button class="deck-action-btn" id="sortDeckBtn">Sort</button>
+        <button class="deck-action-btn" id="handSimBtn">&#127922; Hand</button>
         <button class="deck-action-btn" id="exportDeckBtn">&#8659; Export</button>
         <button class="deck-action-btn" id="importDeckBtn">Import</button>
         <button class="deck-action-btn danger" id="clearDeckBtn">Clear</button>
@@ -1060,6 +1082,22 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
       <button class="btn-primary" id="exportCopyBtn" style="margin:0;">&#128203; Copy</button>
       <button class="btn-primary" id="exportDownloadBtn" style="margin:0;">&#8659; Download</button>
       <button class="btn-secondary" id="exportCloseBtn">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Opening hand simulator -->
+<div class="modal-backdrop" id="handModal">
+  <div class="modal-box hand-modal-box">
+    <div class="modal-title">OPENING HAND</div>
+    <div class="hand-info" id="handInfo"></div>
+    <div class="hand-grid" id="handGrid"></div>
+    <div class="hand-note">Mulligan: each one draws 1 fewer card than the last.</div>
+    <div class="modal-actions">
+      <button class="btn-primary" id="handNewBtn" style="margin:0;">New Hand</button>
+      <button class="btn-primary" id="handMulliganBtn" style="margin:0;">Mulligan</button>
+      <button class="btn-primary" id="handDrawBtn" style="margin:0;">Draw 1</button>
+      <button class="btn-secondary" id="handCloseBtn">Close</button>
     </div>
   </div>
 </div>
@@ -2065,6 +2103,75 @@ function renderSavedDecks() {
 }
 
 // ============================================================
+// OPENING HAND SIMULATOR
+// ============================================================
+const HAND_SIZE = 7;
+const handSim = { library: [], hand: [], mulligans: 0 };
+
+// Unbiased Fisher-Yates shuffle (in place).
+function shuffleInPlace(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// Expand the deck into one entry per physical card.
+function buildLibrary() {
+  const lib = [];
+  Object.values(state.deck).forEach(({ card, qty }) => {
+    for (let i = 0; i < qty; i++) lib.push(card);
+  });
+  return lib;
+}
+
+function handSizeFor(mulligans) { return Math.max(1, HAND_SIZE - mulligans); }
+
+function dealHand() {
+  handSim.library = shuffleInPlace(buildLibrary());
+  handSim.hand = handSim.library.splice(0, handSizeFor(handSim.mulligans));
+  renderHand();
+}
+
+function renderHand() {
+  const isLand = c => (c.type_line || '').toLowerCase().includes('land');
+  const lands = handSim.hand.filter(isLand).length;
+  document.getElementById('handInfo').innerHTML =
+    `<span>Hand: <b>${handSim.hand.length}</b></span>` +
+    `<span>Lands: <b>${lands}</b></span>` +
+    `<span>Spells: <b>${handSim.hand.length - lands}</b></span>` +
+    `<span>Mulligans: <b>${handSim.mulligans}</b></span>` +
+    `<span>Library: <b>${handSim.library.length}</b></span>`;
+  document.getElementById('handGrid').innerHTML = handSim.hand.map(card => {
+    const img = getImageUri(card);
+    const name = escapeHtml(card.name);
+    return `<div class="hand-card" title="${name}">${img ? `<img src="${escapeHtml(img)}" alt="${name}">` : name}</div>`;
+  }).join('');
+  document.getElementById('handMulliganBtn').disabled = handSizeFor(handSim.mulligans) <= 1;
+  document.getElementById('handDrawBtn').disabled = handSim.library.length === 0;
+}
+
+function openHandSim() {
+  if (!Object.keys(state.deck).length) { showToast('Deck is empty'); return; }
+  handSim.mulligans = 0;
+  dealHand();
+  document.getElementById('handModal').classList.add('show');
+}
+
+function mulliganHand() {
+  if (handSizeFor(handSim.mulligans) <= 1) return;
+  handSim.mulligans++;
+  dealHand(); // reshuffle everything and draw one fewer card
+}
+
+function drawOne() {
+  if (!handSim.library.length) return;
+  handSim.hand.push(handSim.library.shift());
+  renderHand();
+}
+
+// ============================================================
 // IMPORT / EXPORT
 // ============================================================
 function buildExportText(fmt) {
@@ -2345,6 +2452,14 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('clearDeckBtn').addEventListener('click', clearDeck);
   document.getElementById('sortDeckBtn').addEventListener('click', () => { renderDeck(); showToast('Sorted'); });
   document.getElementById('exportDeckBtn').addEventListener('click', openExportModal);
+  document.getElementById('handSimBtn').addEventListener('click', openHandSim);
+  document.getElementById('handNewBtn').addEventListener('click', () => { handSim.mulligans = 0; dealHand(); });
+  document.getElementById('handMulliganBtn').addEventListener('click', mulliganHand);
+  document.getElementById('handDrawBtn').addEventListener('click', drawOne);
+  document.getElementById('handCloseBtn').addEventListener('click', () => document.getElementById('handModal').classList.remove('show'));
+  document.getElementById('handModal').addEventListener('click', e => {
+    if (e.target === document.getElementById('handModal')) document.getElementById('handModal').classList.remove('show');
+  });
 
   // Export modal controls
   document.getElementById('exportModal').addEventListener('click', e => {
