@@ -13,9 +13,14 @@ A single-file, browser-based deck builder for *Magic: The Gathering*. No install
 - ✅ **Legality checker** for supported formats
 - 💾 **Local save/load** — decks are stored in your browser (`localStorage`), no account needed
 - 📤 **Import / Export** — supports plain text, Arena, and Archidekt-style formats
+- 🎲 **Opening hand simulator** — draw 7, mulligan, draw extra cards
+- 🗂️ **Sideboard** (up to 15 cards) with move-between-zones buttons; saved, imported and exported with the deck
+- 📱 Responsive layout for phones and tablets
 - ⌨️ Keyboard shortcut: `Ctrl/Cmd + S` to save
 
 ## Getting Started
+
+**Online:** open <https://lunar1989331.github.io/mtg-deck-editor/> — or run it locally:
 
 1. Download `mtg-deck-editor.html`
 2. Open it in any modern browser (Chrome, Firefox, Edge, Safari)
@@ -24,6 +29,8 @@ A single-file, browser-based deck builder for *Magic: The Gathering*. No install
 That's it — no server, no `npm install`, no API key required.
 
 > **Note:** Deck data is saved locally in your browser. Clearing your browser data (or switching browsers/devices) will lose saved decks unless you export them first.
+
+> **For contributors:** `index.html` is a copy of `mtg-deck-editor.html` so the GitHub Pages root URL works. When you edit one, copy it over the other.
 
 ## Tech Stack
 
