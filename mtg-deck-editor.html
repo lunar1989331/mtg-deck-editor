@@ -1020,7 +1020,7 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
         <span style="font-size:0.65rem">Search and click cards to add</span>
       </div>
       <div id="deckList"></div>
-      <div class="sideboard-section" id="sideboardSection" style="display:none;">
+      <div class="sideboard-section" id="sideboardSection">
         <div class="deck-category-header">
           <span>Sideboard</span>
           <span class="deck-category-count" id="sideboardCount">0 / 15</span>
@@ -1635,9 +1635,14 @@ function renderSideboard() {
   const section = document.getElementById('sideboardSection');
   const list = document.getElementById('sideboardList');
   const entries = Object.values(state.sideboard);
-  if (!entries.length) { section.style.display = 'none'; list.innerHTML = ''; return; }
+  section.style.display = 'block'; // always visible so it is easy to find
+  if (!entries.length) {
+    document.getElementById('sideboardCount').textContent = `0 / ${SIDEBOARD_MAX}`;
+    document.getElementById('sideboardCount').classList.remove('over');
+    list.innerHTML = '<div style="font-size:0.65rem;color:var(--text-muted);padding:6px;">Empty — use the SB button on a deck card or a search result</div>';
+    return;
+  }
 
-  section.style.display = 'block';
   const total = sideboardTotal();
   const cnt = document.getElementById('sideboardCount');
   cnt.textContent = `${total} / ${SIDEBOARD_MAX}`;
