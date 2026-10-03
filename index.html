@@ -805,6 +805,29 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
 }
 .price-breakdown-item span:last-child { color: #68b85a; }
 
+/* Commander */
+.format-bar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  border-bottom: 1px solid var(--border); background: var(--bg-secondary);
+  font-size: 0.65rem; color: var(--text-secondary); letter-spacing: 1px;
+}
+#formatSelect {
+  background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 6px; font-family: 'Cinzel', serif; font-size: 0.68rem; outline: none;
+}
+#formatSelect:focus { border-color: var(--gold); }
+.commander-slot {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border-bottom: 1px solid var(--border); background: var(--bg-card); font-size: 0.72rem;
+}
+.commander-slot .cmdr-label { color: var(--gold); letter-spacing: 2px; font-size: 0.6rem; flex-shrink: 0; }
+.commander-slot .cmdr-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commander-slot .cmdr-name.empty { color: var(--text-muted); }
+.deck-issues { padding: 4px 12px 6px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
+.deck-issues .issue { font-size: 0.64rem; color: #e0a040; padding: 2px 0; line-height: 1.4; }
+.deck-issues .issue.ok { color: #68b85a; }
+.entry-name.off-identity { color: #e74c3c; }
+
 /* Sideboard */
 .sideboard-section { margin-top: 18px; padding-top: 6px; border-top: 1px dashed var(--gold-dark); }
 .deck-category-count.over { color: #e74c3c; }
@@ -1023,9 +1046,20 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
       <div class="deck-stats-bar">
         <div>
           <span class="deck-count" id="deckCount">0</span>
-          <span class="deck-count-label"> / 60 cards</span>
+          <span class="deck-count-label" id="deckTargetLabel"> / 60 cards</span>
         </div>
         <div id="formatTagsBar" style="display:flex;gap:4px;margin-left:auto;flex-wrap:wrap;"></div>
+      </div>
+      <div class="format-bar">
+        <span>FORMAT</span>
+        <select id="formatSelect">
+          <option value="constructed">Constructed (60)</option>
+          <option value="commander">Commander (100)</option>
+        </select>
+      </div>
+      <div id="commanderPanel" style="display:none;">
+        <div class="commander-slot" id="commanderSlot"></div>
+        <div class="deck-issues" id="deckIssues"></div>
       </div>
       <div class="deck-action-bar">
         <button class="deck-action-btn" id="sortDeckBtn">Sort</button>
@@ -1185,6 +1219,8 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
 const state = {
   deck: {},        // { cardId: { card, qty } }
   sideboard: {},   // { cardId: { card, qty } }, max SIDEBOARD_MAX cards total
+  format: 'constructed', // 'constructed' (60) | 'commander' (100)
+  commander: null,       // card object while a commander is designated (Commander format)
   searchResults: [],
   currentPage: 1,
   totalPages: 1,
@@ -1258,7 +1294,7 @@ function getCmc(card) {
 }
 
 function getTotalDeckCount() {
-  return Object.values(state.deck).reduce((s, e) => s + e.qty, 0);
+  return Object.values(state.deck).reduce((s, e) => s + e.qty, 0) + (state.commander ? 1 : 0);
 }
 
 function getImageUri(card) {
@@ -1550,7 +1586,64 @@ const SIDEBOARD_MAX = 15;
 
 const isLandCard = card => (card.type_line || '').toLowerCase().includes('land');
 // Copies of one card across main deck + sideboard (the 4-copy rule applies to both together).
-const copiesOf = id => (state.deck[id]?.qty || 0) + (state.sideboard[id]?.qty || 0);
+const copiesOf = id => (state.deck[id]?.qty || 0) + (state.sideboard[id]?.qty || 0) + (state.commander && state.commander.id === id ? 1 : 0);
+
+const isCommanderFormat = () => state.format === 'commander';
+const deckTarget = () => (isCommanderFormat() ? 100 : 60);
+const allDeckEntries = () => [...Object.values(state.deck), ...(state.commander ? [{ card: state.commander, qty: 1 }] : [])];
+
+function oracleText(card) {
+  return card.oracle_text || (card.card_faces || []).map(f => f.oracle_text || '').join('\n');
+}
+function isBasicLand(card) { return /\bbasic\b/i.test(card.type_line || '') && isLandCard(card); }
+function hasAnyNumberRule(card) { return /a deck can have any number of cards named/i.test(oracleText(card)); }
+
+// Max copies of one card in the deck (main + sideboard + command zone).
+function maxCopies(card) {
+  if (isCommanderFormat()) return (isBasicLand(card) || hasAnyNumberRule(card)) ? Infinity : 1;
+  return isLandCard(card) ? Infinity : 4;
+}
+const copyLimitMsg = card => (isCommanderFormat() && maxCopies(card) === 1) ? 'Commander: only 1 copy allowed' : 'Max 4 copies allowed';
+
+// Can this card be your commander? Legendary creature, legendary Vehicle/Spacecraft with P/T,
+// or rules text saying it can be your commander.
+function canBeCommander(card) {
+  const t = card.type_line || '';
+  if (/legendary/i.test(t) && /creature/i.test(t)) return true;
+  if (/legendary/i.test(t) && /(vehicle|spacecraft)/i.test(t) && card.power !== undefined) return true;
+  return /can be your commander/i.test(oracleText(card));
+}
+
+// Color identity comes straight from Scryfall (it includes mana symbols in rules text).
+const identityOf = card => card.color_identity || [];
+function outsideIdentity(card) {
+  if (!isCommanderFormat() || !state.commander) return false;
+  const allowed = new Set(identityOf(state.commander));
+  return identityOf(card).some(c => !allowed.has(c));
+}
+
+function validateCommanderDeck() {
+  const issues = [];
+  if (!state.commander) issues.push('No commander selected — press CMDR on a legendary creature.');
+  const total = getTotalDeckCount();
+  if (total < 100) issues.push(`Deck has ${total} / 100 cards (${100 - total} more needed).`);
+  else if (total > 100) issues.push(`Deck has ${total} cards (${total - 100} over the 100-card limit).`);
+
+  // Singleton, counted by card NAME so different printings of one card are caught too.
+  const byName = new Map();
+  allDeckEntries().forEach(({ card, qty }) => {
+    const e = byName.get(card.name) || { card, qty: 0 };
+    e.qty += qty; byName.set(card.name, e);
+  });
+  const dupes = [...byName.values()].filter(e => e.qty > maxCopies(e.card)).map(e => `${e.card.name} ×${e.qty}`);
+  if (dupes.length) issues.push(`More than 1 copy: ${dupes.join(', ')}.`);
+
+  if (state.commander) {
+    const off = Object.values(state.deck).filter(e => outsideIdentity(e.card)).map(e => e.card.name);
+    if (off.length) issues.push(`Outside commander color identity: ${off.join(', ')}.`);
+  }
+  return issues;
+}
 const sideboardTotal = () => Object.values(state.sideboard).reduce((s, e) => s + e.qty, 0);
 
 function afterDeckChange() {
@@ -1561,20 +1654,20 @@ function afterDeckChange() {
 
 function addCardToDeck(card) {
   const id = card.id;
-  if (!isLandCard(card) && copiesOf(id) >= 4) {
-    showToast('Max 4 copies allowed');
+  if (copiesOf(id) >= maxCopies(card)) {
+    showToast(copyLimitMsg(card));
     return;
   }
   if (state.deck[id]) state.deck[id].qty++;
   else state.deck[id] = { card, qty: 1 };
   afterDeckChange();
-  showToast(`+1 ${card.name}`);
+  showToast(outsideIdentity(card) ? `⚠ ${card.name} is outside your commander's color identity` : `+1 ${card.name}`, outsideIdentity(card) ? 3500 : 2000);
 }
 
 function addCardToSideboard(card) {
   const id = card.id;
   if (sideboardTotal() >= SIDEBOARD_MAX) { showToast(`Sideboard is full (${SIDEBOARD_MAX})`); return false; }
-  if (!isLandCard(card) && copiesOf(id) >= 4) { showToast('Max 4 copies allowed'); return false; }
+  if (copiesOf(id) >= maxCopies(card)) { showToast(copyLimitMsg(card)); return false; }
   if (state.sideboard[id]) state.sideboard[id].qty++;
   else state.sideboard[id] = { card, qty: 1 };
   afterDeckChange();
@@ -1587,7 +1680,7 @@ function adjustSideQty(id, delta) {
   if (!e) return;
   if (delta > 0) {
     if (sideboardTotal() >= SIDEBOARD_MAX) { showToast(`Sideboard is full (${SIDEBOARD_MAX})`); return; }
-    if (!isLandCard(e.card) && copiesOf(id) >= 4) { showToast('Max 4 copies'); return; }
+    if (copiesOf(id) >= maxCopies(e.card)) { showToast(copyLimitMsg(e.card)); return; }
   }
   e.qty += delta;
   if (e.qty <= 0) delete state.sideboard[id];
@@ -1609,6 +1702,67 @@ function moveToSideboard(id) {
   e.qty--;
   if (e.qty <= 0) delete state.deck[id];
   afterDeckChange();
+}
+
+// Designate a card from the main deck as commander (the previous commander returns to the deck).
+function setCommander(id) {
+  const e = state.deck[id];
+  if (!e || !isCommanderFormat()) return;
+  if (!canBeCommander(e.card)) { showToast('This card cannot be a commander'); return; }
+  const prev = state.commander;
+  e.qty--;
+  if (e.qty <= 0) delete state.deck[id];
+  state.commander = e.card;
+  if (prev) {
+    if (state.deck[prev.id]) state.deck[prev.id].qty++;
+    else state.deck[prev.id] = { card: prev, qty: 1 };
+  }
+  afterDeckChange();
+  showToast(`Commander: ${e.card.name}`);
+}
+
+function unsetCommander() {
+  const c = state.commander;
+  if (!c) return;
+  state.commander = null;
+  if (state.deck[c.id]) state.deck[c.id].qty++;
+  else state.deck[c.id] = { card: c, qty: 1 };
+  afterDeckChange();
+}
+
+function setFormat(fmt) {
+  if (fmt !== 'constructed' && fmt !== 'commander') return;
+  if (fmt === 'constructed' && state.commander) unsetCommander(); // commander goes back into the deck
+  state.format = fmt;
+  afterDeckChange();
+}
+
+function renderCommanderPanel() {
+  const panel = document.getElementById('commanderPanel');
+  panel.style.display = isCommanderFormat() ? 'block' : 'none';
+  if (!isCommanderFormat()) return;
+
+  const slot = document.getElementById('commanderSlot');
+  const c = state.commander;
+  if (c) {
+    const idMana = identityOf(c).map(x => `{${x}}`).join('');
+    slot.innerHTML = `<span class="cmdr-label">COMMANDER</span>
+      <span class="cmdr-name">${escapeHtml(c.name)}</span>
+      <div class="mana-cost-display">${idMana ? renderManaCost(idMana) : '<span style="color:var(--text-muted);font-size:0.6rem;">Colorless</span>'}</div>
+      <button class="del-btn" id="cmdrClearBtn" title="Return to deck">&#215;</button>`;
+    slot.querySelector('#cmdrClearBtn').addEventListener('click', unsetCommander);
+    const nameEl = slot.querySelector('.cmdr-name');
+    nameEl.addEventListener('mouseenter', e => showPreview(c, e));
+    nameEl.addEventListener('mouseleave', hidePreview);
+    nameEl.addEventListener('mousemove', movePreview);
+  } else {
+    slot.innerHTML = '<span class="cmdr-label">COMMANDER</span><span class="cmdr-name empty">Not set — press CMDR on a legendary creature in your deck</span>';
+  }
+
+  const issues = validateCommanderDeck();
+  document.getElementById('deckIssues').innerHTML = issues.length
+    ? issues.map(t => `<div class="issue">⚠ ${escapeHtml(t)}</div>`).join('')
+    : '<div class="issue ok">✓ Valid Commander deck</div>';
 }
 
 function moveToMain(id) {
@@ -1641,10 +1795,11 @@ function adjustQty(id, delta) {
 }
 
 function clearDeck() {
-  if (!Object.keys(state.deck).length && !Object.keys(state.sideboard).length) return;
+  if (!Object.keys(state.deck).length && !Object.keys(state.sideboard).length && !state.commander) return;
   if (!confirm('Clear all cards from deck and sideboard?')) return;
   state.deck = {};
   state.sideboard = {};
+  state.commander = null;
   state.legalityData = {};
   renderDeck();
   updateCharts();
@@ -1700,6 +1855,9 @@ function renderSideboard() {
 }
 
 function renderDeck() {
+  document.getElementById('formatSelect').value = state.format;
+  document.getElementById('deckTargetLabel').textContent = ` / ${deckTarget()} cards`;
+  renderCommanderPanel();
   renderSideboard();
   const deckList = document.getElementById('deckList');
   const emptyMsg = document.getElementById('emptyDeckMsg');
@@ -1757,9 +1915,10 @@ function renderDeck() {
           <span class="qty-num">${qty}</span>
           <button class="qty-btn" data-action="inc" data-id="${card.id}">+</button>
         </div>
-        <span class="entry-name" data-id="${card.id}" title="${card.name}">${card.name}</span>
+        <span class="entry-name${outsideIdentity(card) ? ' off-identity' : ''}" data-id="${card.id}" title="${outsideIdentity(card) ? 'Outside commander color identity' : card.name}">${card.name}</span>
         <div class="mana-cost-display">${renderManaCost(card.mana_cost || (card.card_faces && card.card_faces[0].mana_cost) || '')}</div>
         ${priceHtml}
+        ${isCommanderFormat() && canBeCommander(card) ? '<button class="sb-move-btn" data-action="tocmdr" title="Set as commander">CMDR</button>' : ''}
         <button class="sb-move-btn" data-action="tosb" title="Move 1 to sideboard">SB</button>
         <button class="del-btn" data-id="${card.id}" title="Remove">&#215;</button>
       `;
@@ -1773,10 +1932,12 @@ function renderDeck() {
 
       entry.querySelector('[data-action="dec"]').addEventListener('click', () => adjustQty(card.id, -1));
       entry.querySelector('[data-action="inc"]').addEventListener('click', () => {
-        if (!isLandCard(card) && copiesOf(card.id) >= 4) { showToast('Max 4 copies'); return; }
+        if (copiesOf(card.id) >= maxCopies(card)) { showToast(copyLimitMsg(card)); return; }
         adjustQty(card.id, 1);
       });
       entry.querySelector('[data-action="tosb"]').addEventListener('click', () => moveToSideboard(card.id));
+      const cmdrBtn = entry.querySelector('[data-action="tocmdr"]');
+      if (cmdrBtn) cmdrBtn.addEventListener('click', () => setCommander(card.id));
       entry.querySelector('.del-btn').addEventListener('click', () => removeCardFromDeck(card.id));
 
       catDiv.appendChild(entry);
@@ -1799,7 +1960,7 @@ function getCardPrice(card) {
 }
 
 function updatePricePanel() {
-  const entries = Object.values(state.deck);
+  const entries = allDeckEntries();
   let total = 0;
   const catTotals = {};
   let hasAny = false;
@@ -1981,7 +2142,7 @@ function updateColorChart() {
 const FORMATS = ['standard','pioneer','modern','legacy','commander','vintage'];
 
 async function checkDeckLegality() {
-  const entries = Object.values(state.deck);
+  const entries = allDeckEntries();
   if (!entries.length) { showToast('Deck is empty'); return; }
 
   const btn = document.getElementById('checkLegalityBtn');
@@ -2132,6 +2293,8 @@ function saveDeck() {
     name,
     savedAt: Date.now(),
     v: 2,
+    format: state.format,
+    commander: state.commander ? { id: state.commander.id, name: state.commander.name } : null,
     cards: entries.map(({ card, qty }) => ({ id: card.id, name: card.name, qty })),
     side: Object.values(state.sideboard).map(({ card, qty }) => ({ id: card.id, name: card.name, qty })),
   };
@@ -2146,8 +2309,10 @@ async function loadDeck(name) {
 
   const newDeck = {};
   const newSide = {};
+  let newCmdr = null;
   const notFound = [];
   const place = (zone, card, qty) => {
+    if (zone === 'cmdr') { newCmdr = card; return; }
     const target = zone === 'side' ? newSide : newDeck;
     if (target[card.id]) target[card.id].qty += qty;
     else target[card.id] = { card, qty };
@@ -2162,6 +2327,7 @@ async function loadDeck(name) {
     const jobs = [
       ...deck.cards.filter(valid).map(e => ({ ...e, zone: 'main' })),
       ...(Array.isArray(deck.side) ? deck.side : []).filter(valid).map(e => ({ ...e, zone: 'side' })),
+      ...(valid(deck.commander) ? [{ ...deck.commander, qty: 1, zone: 'cmdr' }] : []),
     ];
     for (let i = 0; i < jobs.length; i += 75) {
       if (i > 0) await sleep(100); // be polite to Scryfall
@@ -2220,7 +2386,7 @@ async function loadDeck(name) {
     }
   }
 
-  if (!Object.keys(newDeck).length && !Object.keys(newSide).length) {
+  if (!Object.keys(newDeck).length && !Object.keys(newSide).length && !newCmdr) {
     showToast('Load failed: could not fetch card data');
     if (notFound.length) showImportReport([...new Set(notFound)]);
     return; // keep the current deck untouched
@@ -2228,6 +2394,11 @@ async function loadDeck(name) {
 
   state.deck = newDeck;
   state.sideboard = newSide;
+  state.format = deck.format === 'commander' ? 'commander' : 'constructed';
+  state.commander = state.format === 'commander' ? newCmdr : null;
+  if (newCmdr && state.format !== 'commander') { // defensive: never lose a card
+    state.deck[newCmdr.id] = { card: newCmdr, qty: (state.deck[newCmdr.id]?.qty || 0) + 1 };
+  }
   state.legalityData = {};
   renderDeck();
   updateCharts();
@@ -2258,7 +2429,7 @@ function renderSavedDecks() {
 
   container.innerHTML = names.sort((a, b) => saved[b].savedAt - saved[a].savedAt).map(name => {
     const deck = saved[name];
-    const total = (deck.cards || []).reduce((s, e) => s + e.qty, 0);
+    const total = (deck.cards || []).reduce((s, e) => s + e.qty, 0) + (deck.commander ? 1 : 0);
     const sideTotal = (deck.side || []).reduce((s, e) => s + e.qty, 0);
     const en = escapeHtml(name);
     return `<div class="saved-deck-item">
@@ -2360,6 +2531,7 @@ function buildExportText(fmt) {
   if (fmt === 'mtgo' || fmt === 'moxfield' || fmt === 'archidekt') {
     // Standard "qty CardName" format, categories as comments
     let text = '';
+    if (state.commander) text += `Commander\n${fmt === 'archidekt' ? '1x' : '1'} ${state.commander.name}\n\n`;
     catOrder.forEach(cat => {
       if (!categories[cat]?.length) return;
       text += `// ${cat}\n`;
@@ -2392,7 +2564,9 @@ function buildExportText(fmt) {
       return `${qty} ${card.name} (${set}) ${num}`;
     };
     const byName = (a, b) => a.card.name.localeCompare(b.card.name);
-    let text = 'Deck\n';
+    let text = '';
+    if (state.commander) text += `Commander\n${fmt_line({ card: state.commander, qty: 1 })}\n\n`;
+    text += 'Deck\n';
     [...entries].sort(byName).forEach(e => { text += fmt_line(e) + '\n'; });
     if (sideEntries.length) {
       text += '\nSideboard\n';
@@ -2455,14 +2629,19 @@ function parseDeckText(text) {
 
   for (const raw of String(text).split(/\r?\n/)) {
     const line = raw.trim();
-    if (!line) { if (blockHasCards) { block++; blockHasCards = false; } continue; }
+    if (!line) {
+      if (blockHasCards) { block++; blockHasCards = false; if (zone === 'cmdr') zone = 'main'; } // commander block ends at a blank line
+      continue;
+    }
 
     const commentHdr = line.match(/^(?:\/\/|#)\s*(sideboard|side)\s*:?$/i);
     if (commentHdr) { zone = 'side'; explicit = true; continue; }
     if (line.startsWith('//') || line.startsWith('#')) { hasComment = true; continue; }
 
     if (/^(sideboard|side board|sb)\s*(\(\d+\))?\s*:?$/i.test(line)) { zone = 'side'; explicit = true; continue; }
-    if (/^(deck|main|maindeck|main deck|commander|companion)\s*(\(\d+\))?\s*:?$/i.test(line)) { zone = 'main'; explicit = true; continue; }
+    if (/^commander\s*(\(\d+\))?\s*:?$/i.test(line)) { zone = 'cmdr'; explicit = true; continue; }
+    if (/^companion\s*(\(\d+\))?\s*:?$/i.test(line)) { zone = 'side'; explicit = true; continue; }
+    if (/^(deck|main|maindeck|main deck)\s*(\(\d+\))?\s*:?$/i.test(line)) { zone = 'main'; explicit = true; continue; }
 
     let body = line, lineZone = zone;
     const sb = line.match(/^SB:\s*(.+)$/i);
@@ -2506,8 +2685,10 @@ async function importDeck(text) {
 
   const newDeck = {};
   const newSide = {};
+  let newCmdr = null;
   const notFound = [];
   const place = (zone, card, qty) => {
+    if (zone === 'cmdr' && !newCmdr) { newCmdr = card; return; }  // first card = commander (partners: v2)
     const target = zone === 'side' ? newSide : newDeck;
     if (target[card.id]) target[card.id].qty += qty;
     else target[card.id] = { card, qty };
@@ -2556,7 +2737,7 @@ async function importDeck(text) {
 
   const count = Object.keys(newDeck).length;
   const sideCount = Object.values(newSide).reduce((s, e) => s + e.qty, 0);
-  if (!count && !sideCount) {
+  if (!count && !sideCount && !newCmdr) {
     // Nothing imported: keep the user's current deck untouched.
     showToast('Import failed: no cards found');
     if (notFound.length) showImportReport(notFound);
@@ -2565,11 +2746,14 @@ async function importDeck(text) {
 
   state.deck = newDeck;
   state.sideboard = newSide;
+  if (newCmdr) state.format = 'commander';
+  state.commander = (newCmdr && state.format === 'commander') ? newCmdr : null;
   state.legalityData = {};
   renderDeck();
   updateCharts();
   resetLegality();
-  let msg = `Imported ${count} unique cards`;
+  let msg = `Imported ${count + (newCmdr ? 1 : 0)} unique cards`;
+  if (newCmdr) msg += ` (commander: ${newCmdr.name})`;
   if (sideCount) msg += `, ${sideCount} in sideboard`;
   if (sideCount > SIDEBOARD_MAX) msg += ` (over the ${SIDEBOARD_MAX}-card limit!)`;
   showToast(msg, sideCount > SIDEBOARD_MAX ? 4500 : 2000);
@@ -2680,6 +2864,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('sortDeckBtn').addEventListener('click', () => { renderDeck(); showToast('Sorted'); });
   document.getElementById('exportDeckBtn').addEventListener('click', openExportModal);
   document.getElementById('handSimBtn').addEventListener('click', openHandSim);
+  document.getElementById('formatSelect').addEventListener('change', e => setFormat(e.target.value));
   document.getElementById('handNewBtn').addEventListener('click', () => { handSim.mulligans = 0; dealHand(); });
   document.getElementById('handMulliganBtn').addEventListener('click', mulliganHand);
   document.getElementById('handDrawBtn').addEventListener('click', drawOne);
