@@ -805,6 +805,25 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
 }
 .price-breakdown-item span:last-child { color: #68b85a; }
 
+/* Sideboard */
+.sideboard-section { margin-top: 18px; padding-top: 6px; border-top: 1px dashed var(--gold-dark); }
+.deck-category-count.over { color: #e74c3c; }
+.sb-move-btn {
+  padding: 1px 6px; border: 1px solid var(--border); background: var(--bg-secondary);
+  color: var(--text-secondary); border-radius: 3px; cursor: pointer;
+  font-family: 'Cinzel', serif; font-size: 0.58rem; letter-spacing: 1px; flex-shrink: 0;
+  transition: all 0.15s;
+}
+.sb-move-btn:hover { border-color: var(--gold); color: var(--gold); }
+.card-result .add-sb-btn {
+  position: absolute; bottom: 6px; left: 6px;
+  background: rgba(30,30,40,0.92); color: var(--gold);
+  border: 1px solid var(--gold-dark); border-radius: 12px;
+  height: 26px; padding: 0 8px; font-size: 0.6rem; letter-spacing: 1px;
+  cursor: pointer; opacity: 0; transition: opacity 0.2s;
+}
+.card-result:hover .add-sb-btn { opacity: 1; }
+
 /* Opening hand simulator */
 .modal-box.hand-modal-box { width: 780px; }
 .hand-info {
@@ -1001,6 +1020,13 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
         <span style="font-size:0.65rem">Search and click cards to add</span>
       </div>
       <div id="deckList"></div>
+      <div class="sideboard-section" id="sideboardSection" style="display:none;">
+        <div class="deck-category-header">
+          <span>Sideboard</span>
+          <span class="deck-category-count" id="sideboardCount">0 / 15</span>
+        </div>
+        <div id="sideboardList"></div>
+      </div>
     </div>
   </div>
 
@@ -1137,6 +1163,7 @@ footer.app-footer a:hover { color: var(--gold-light); text-decoration: underline
 // ============================================================
 const state = {
   deck: {},        // { cardId: { card, qty } }
+  sideboard: {},   // { cardId: { card, qty } }, max SIDEBOARD_MAX cards total
   searchResults: [],
   currentPage: 1,
   totalPages: 1,
@@ -1435,6 +1462,7 @@ function renderSearchResults(cards) {
     div.innerHTML = `
       <img src="${imgUri}" alt="${card.name}" loading="lazy">
       <button class="add-btn" title="Add to deck">+</button>
+      <button class="add-sb-btn" title="Add to sideboard">SB</button>
     `;
 
     // Preview on hover
@@ -1446,6 +1474,10 @@ function renderSearchResults(cards) {
     div.querySelector('.add-btn').addEventListener('click', e => {
       e.stopPropagation();
       addCardToDeck(card);
+    });
+    div.querySelector('.add-sb-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      addCardToSideboard(card);
     });
     div.querySelector('img').addEventListener('click', () => addCardToDeck(card));
 
@@ -1493,22 +1525,79 @@ function hidePreview() {
 // ============================================================
 // DECK MANAGEMENT
 // ============================================================
+const SIDEBOARD_MAX = 15;
+
+const isLandCard = card => (card.type_line || '').toLowerCase().includes('land');
+// Copies of one card across main deck + sideboard (the 4-copy rule applies to both together).
+const copiesOf = id => (state.deck[id]?.qty || 0) + (state.sideboard[id]?.qty || 0);
+const sideboardTotal = () => Object.values(state.sideboard).reduce((s, e) => s + e.qty, 0);
+
+function afterDeckChange() {
+  state.legalityData = {}; // invalidate
+  renderDeck();            // also re-renders the sideboard
+  updateCharts();
+}
+
 function addCardToDeck(card) {
   const id = card.id;
-  if (state.deck[id]) {
-    if (state.deck[id].qty < 4 || (card.type_line || '').toLowerCase().includes('land')) {
-      state.deck[id].qty++;
-    } else {
-      showToast('Max 4 copies allowed');
-      return;
-    }
-  } else {
-    state.deck[id] = { card, qty: 1 };
+  if (!isLandCard(card) && copiesOf(id) >= 4) {
+    showToast('Max 4 copies allowed');
+    return;
   }
-  state.legalityData = {}; // invalidate
-  renderDeck();
-  updateCharts();
+  if (state.deck[id]) state.deck[id].qty++;
+  else state.deck[id] = { card, qty: 1 };
+  afterDeckChange();
   showToast(`+1 ${card.name}`);
+}
+
+function addCardToSideboard(card) {
+  const id = card.id;
+  if (sideboardTotal() >= SIDEBOARD_MAX) { showToast(`Sideboard is full (${SIDEBOARD_MAX})`); return false; }
+  if (!isLandCard(card) && copiesOf(id) >= 4) { showToast('Max 4 copies allowed'); return false; }
+  if (state.sideboard[id]) state.sideboard[id].qty++;
+  else state.sideboard[id] = { card, qty: 1 };
+  afterDeckChange();
+  showToast(`+1 ${card.name} (sideboard)`);
+  return true;
+}
+
+function adjustSideQty(id, delta) {
+  const e = state.sideboard[id];
+  if (!e) return;
+  if (delta > 0) {
+    if (sideboardTotal() >= SIDEBOARD_MAX) { showToast(`Sideboard is full (${SIDEBOARD_MAX})`); return; }
+    if (!isLandCard(e.card) && copiesOf(id) >= 4) { showToast('Max 4 copies'); return; }
+  }
+  e.qty += delta;
+  if (e.qty <= 0) delete state.sideboard[id];
+  afterDeckChange();
+}
+
+function removeFromSideboard(id) {
+  delete state.sideboard[id];
+  afterDeckChange();
+}
+
+// Move ONE copy between main deck and sideboard.
+function moveToSideboard(id) {
+  const e = state.deck[id];
+  if (!e) return;
+  if (sideboardTotal() >= SIDEBOARD_MAX) { showToast(`Sideboard is full (${SIDEBOARD_MAX})`); return; }
+  if (state.sideboard[id]) state.sideboard[id].qty++;
+  else state.sideboard[id] = { card: e.card, qty: 1 };
+  e.qty--;
+  if (e.qty <= 0) delete state.deck[id];
+  afterDeckChange();
+}
+
+function moveToMain(id) {
+  const e = state.sideboard[id];
+  if (!e) return;
+  if (state.deck[id]) state.deck[id].qty++;
+  else state.deck[id] = { card: e.card, qty: 1 };
+  e.qty--;
+  if (e.qty <= 0) delete state.sideboard[id];
+  afterDeckChange();
 }
 
 function removeCardFromDeck(id) {
@@ -1531,9 +1620,10 @@ function adjustQty(id, delta) {
 }
 
 function clearDeck() {
-  if (!Object.keys(state.deck).length) return;
-  if (!confirm('Clear all cards from deck?')) return;
+  if (!Object.keys(state.deck).length && !Object.keys(state.sideboard).length) return;
+  if (!confirm('Clear all cards from deck and sideboard?')) return;
   state.deck = {};
+  state.sideboard = {};
   state.legalityData = {};
   renderDeck();
   updateCharts();
@@ -1541,7 +1631,50 @@ function clearDeck() {
   showToast('Deck cleared');
 }
 
+function renderSideboard() {
+  const section = document.getElementById('sideboardSection');
+  const list = document.getElementById('sideboardList');
+  const entries = Object.values(state.sideboard);
+  if (!entries.length) { section.style.display = 'none'; list.innerHTML = ''; return; }
+
+  section.style.display = 'block';
+  const total = sideboardTotal();
+  const cnt = document.getElementById('sideboardCount');
+  cnt.textContent = `${total} / ${SIDEBOARD_MAX}`;
+  cnt.classList.toggle('over', total > SIDEBOARD_MAX);
+  cnt.title = total > SIDEBOARD_MAX ? `Sideboard has more than ${SIDEBOARD_MAX} cards` : '';
+
+  entries.sort((a, b) => (getCmc(a.card) - getCmc(b.card)) || a.card.name.localeCompare(b.card.name));
+  list.innerHTML = '';
+  entries.forEach(({ card, qty }) => {
+    const name = escapeHtml(card.name);
+    const entry = document.createElement('div');
+    entry.className = 'deck-entry';
+    entry.innerHTML = `
+      <div class="qty-controls">
+        <button class="qty-btn" data-action="dec">-</button>
+        <span class="qty-num">${qty}</span>
+        <button class="qty-btn" data-action="inc">+</button>
+      </div>
+      <span class="entry-name" title="${name}">${name}</span>
+      <div class="mana-cost-display">${renderManaCost(card.mana_cost || (card.card_faces && card.card_faces[0].mana_cost) || '')}</div>
+      <button class="sb-move-btn" data-action="tomain" title="Move 1 to main deck">MAIN</button>
+      <button class="del-btn" data-action="del" title="Remove">&#215;</button>
+    `;
+    const nameEl = entry.querySelector('.entry-name');
+    nameEl.addEventListener('mouseenter', e => showPreview(card, e));
+    nameEl.addEventListener('mouseleave', hidePreview);
+    nameEl.addEventListener('mousemove', movePreview);
+    entry.querySelector('[data-action="dec"]').addEventListener('click', () => adjustSideQty(card.id, -1));
+    entry.querySelector('[data-action="inc"]').addEventListener('click', () => adjustSideQty(card.id, 1));
+    entry.querySelector('[data-action="tomain"]').addEventListener('click', () => moveToMain(card.id));
+    entry.querySelector('[data-action="del"]').addEventListener('click', () => removeFromSideboard(card.id));
+    list.appendChild(entry);
+  });
+}
+
 function renderDeck() {
+  renderSideboard();
   const deckList = document.getElementById('deckList');
   const emptyMsg = document.getElementById('emptyDeckMsg');
   const deckCount = document.getElementById('deckCount');
@@ -1601,6 +1734,7 @@ function renderDeck() {
         <span class="entry-name" data-id="${card.id}" title="${card.name}">${card.name}</span>
         <div class="mana-cost-display">${renderManaCost(card.mana_cost || (card.card_faces && card.card_faces[0].mana_cost) || '')}</div>
         ${priceHtml}
+        <button class="sb-move-btn" data-action="tosb" title="Move 1 to sideboard">SB</button>
         <button class="del-btn" data-id="${card.id}" title="Remove">&#215;</button>
       `;
 
@@ -1613,10 +1747,10 @@ function renderDeck() {
 
       entry.querySelector('[data-action="dec"]').addEventListener('click', () => adjustQty(card.id, -1));
       entry.querySelector('[data-action="inc"]').addEventListener('click', () => {
-        const isLand = (card.type_line || '').toLowerCase().includes('land');
-        if (state.deck[card.id].qty >= 4 && !isLand) { showToast('Max 4 copies'); return; }
+        if (!isLandCard(card) && copiesOf(card.id) >= 4) { showToast('Max 4 copies'); return; }
         adjustQty(card.id, 1);
       });
+      entry.querySelector('[data-action="tosb"]').addEventListener('click', () => moveToSideboard(card.id));
       entry.querySelector('.del-btn').addEventListener('click', () => removeCardFromDeck(card.id));
 
       catDiv.appendChild(entry);
@@ -1973,6 +2107,7 @@ function saveDeck() {
     savedAt: Date.now(),
     v: 2,
     cards: entries.map(({ card, qty }) => ({ id: card.id, name: card.name, qty })),
+    side: Object.values(state.sideboard).map(({ card, qty }) => ({ id: card.id, name: card.name, qty })),
   };
   if (!putSavedDecks(saved)) { showToast('Save failed: browser storage is full'); return; }
   renderSavedDecks();
@@ -1984,36 +2119,44 @@ async function loadDeck(name) {
   if (!deck || !Array.isArray(deck.cards)) return;
 
   const newDeck = {};
+  const newSide = {};
   const notFound = [];
+  const place = (zone, card, qty) => {
+    const target = zone === 'side' ? newSide : newDeck;
+    if (target[card.id]) target[card.id].qty += qty;
+    else target[card.id] = { card, qty };
+  };
 
   if (isLegacyDeck(deck)) {
     // Not migrated yet (e.g. storage was full): old entries already contain the full card.
-    deck.cards.forEach(({ card, qty }) => {
-      if (newDeck[card.id]) newDeck[card.id].qty += qty;
-      else newDeck[card.id] = { card, qty };
-    });
+    deck.cards.forEach(({ card, qty }) => place('main', card, qty));
   } else {
     showToast('Loading...', 5000);
-    const entries = deck.cards.filter(c => c && (c.id || c.name));
-    for (let i = 0; i < entries.length; i += 75) {
+    const valid = c => c && (c.id || c.name);
+    const jobs = [
+      ...deck.cards.filter(valid).map(e => ({ ...e, zone: 'main' })),
+      ...(Array.isArray(deck.side) ? deck.side : []).filter(valid).map(e => ({ ...e, zone: 'side' })),
+    ];
+    for (let i = 0; i < jobs.length; i += 75) {
       if (i > 0) await sleep(100); // be polite to Scryfall
-      const chunk = entries.slice(i, i + 75);
+      const chunk = jobs.slice(i, i + 75);
       const unresolved = [];
       try {
+        // One identifier per distinct card (a card may be in both main deck and sideboard).
+        const idents = new Map();
+        chunk.forEach(e => idents.set(e.id ? 'i:' + e.id : 'n:' + normName(e.name), e.id ? { id: e.id } : { name: e.name }));
         const res = await fetch(`${API}/cards/collection`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ identifiers: chunk.map(e => e.id ? { id: e.id } : { name: e.name }) }),
+          body: JSON.stringify({ identifiers: [...idents.values()] }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const byId = new Map((data.data || []).filter(c => c.object === 'card').map(c => [c.id, c]));
         chunk.forEach(e => {
           const card = e.id && byId.get(e.id);
-          if (card) {
-            if (newDeck[card.id]) newDeck[card.id].qty += e.qty;
-            else newDeck[card.id] = { card, qty: e.qty };
-          } else unresolved.push(e);
+          if (card) place(e.zone, card, e.qty);
+          else unresolved.push(e);
         });
       } catch (err) {
         console.error(err);
@@ -2021,49 +2164,51 @@ async function loadDeck(name) {
       }
 
       // Fallback: id no longer resolves (rare) -> try by card name before giving up.
-      if (unresolved.length) {
+      const named = unresolved.filter(e => e.name);
+      unresolved.filter(e => !e.name).forEach(e => notFound.push(e.id));
+      if (named.length) {
         await sleep(100);
         try {
+          const uniqueNames = [...new Map(named.map(e => [normName(e.name), e.name])).values()];
           const res = await fetch(`${API}/cards/collection`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ identifiers: unresolved.filter(e => e.name).map(e => ({ name: e.name })) }),
+            body: JSON.stringify({ identifiers: uniqueNames.map(n => ({ name: n })) }),
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
-          const cards = (data.data || []).filter(c => c.object === 'card');
-          const matched = new Set();
-          cards.forEach(card => {
-            const keys = cardNameKeys(card);
-            const e = unresolved.find(u => u.name && !matched.has(u) && keys.has(normName(u.name)));
-            if (!e) return;
-            matched.add(e);
-            if (newDeck[card.id]) newDeck[card.id].qty += e.qty;
-            else newDeck[card.id] = { card, qty: e.qty };
+          const byName = new Map();
+          (data.data || []).filter(c => c.object === 'card').forEach(card => {
+            cardNameKeys(card).forEach(k => { if (!byName.has(k)) byName.set(k, card); });
           });
-          unresolved.forEach(e => { if (!matched.has(e)) notFound.push(e.name || e.id); });
+          named.forEach(e => {
+            const card = byName.get(normName(e.name));
+            if (card) place(e.zone, card, e.qty);
+            else notFound.push(e.name);
+          });
         } catch (err) {
           console.error(err);
-          unresolved.forEach(e => notFound.push(e.name || e.id));
+          named.forEach(e => notFound.push(e.name));
         }
       }
     }
   }
 
-  if (!Object.keys(newDeck).length) {
+  if (!Object.keys(newDeck).length && !Object.keys(newSide).length) {
     showToast('Load failed: could not fetch card data');
-    if (notFound.length) showImportReport(notFound);
+    if (notFound.length) showImportReport([...new Set(notFound)]);
     return; // keep the current deck untouched
   }
 
   state.deck = newDeck;
+  state.sideboard = newSide;
   state.legalityData = {};
   renderDeck();
   updateCharts();
   resetLegality();
   document.getElementById('deckNameInput').value = name;
   showToast(`Loaded: ${name}`);
-  if (notFound.length) showImportReport(notFound);
+  if (notFound.length) showImportReport([...new Set(notFound)]);
 }
 
 function deleteSavedDeck(name) {
@@ -2088,10 +2233,11 @@ function renderSavedDecks() {
   container.innerHTML = names.sort((a, b) => saved[b].savedAt - saved[a].savedAt).map(name => {
     const deck = saved[name];
     const total = (deck.cards || []).reduce((s, e) => s + e.qty, 0);
+    const sideTotal = (deck.side || []).reduce((s, e) => s + e.qty, 0);
     const en = escapeHtml(name);
     return `<div class="saved-deck-item">
       <span class="saved-deck-name" data-name="${en}">${en}</span>
-      <span class="saved-deck-count">${total}c</span>
+      <span class="saved-deck-count">${total}c${sideTotal ? ` +${sideTotal}sb` : ''}</span>
       <button class="icon-btn load" data-load="${en}" title="Load">&#9654;</button>
       <button class="icon-btn del" data-delete="${en}" title="Delete">&#215;</button>
     </div>`;
@@ -2176,6 +2322,7 @@ function drawOne() {
 // ============================================================
 function buildExportText(fmt) {
   const entries = Object.values(state.deck);
+  const sideEntries = Object.values(state.sideboard).sort((a, b) => a.card.name.localeCompare(b.card.name));
   const catOrder = ['Land','Creature','Planeswalker','Instant','Sorcery','Enchantment','Artifact','Other'];
   const categories = {};
   entries.forEach(({ card, qty }) => {
@@ -2199,29 +2346,31 @@ function buildExportText(fmt) {
       });
       text += '\n';
     });
+    if (sideEntries.length) {
+      if (fmt === 'mtgo') {
+        // MTGO convention: "SB: " prefix on each sideboard line
+        sideEntries.forEach(({ card, qty }) => { text += `SB: ${qty} ${card.name}\n`; });
+      } else {
+        text += 'Sideboard\n';
+        sideEntries.forEach(({ card, qty }) => { text += `${fmt === 'archidekt' ? qty + 'x' : qty} ${card.name}\n`; });
+      }
+    }
     return text.trim();
   }
 
   if (fmt === 'arena') {
-    // Arena format: qty CardName (SET) CollectorNum
-    let text = '';
-    const lands = [], nonlands = [];
-    entries.forEach(e => {
-      const isLand = (e.card.type_line || '').toLowerCase().includes('land');
-      (isLand ? lands : nonlands).push(e);
-    });
+    // Arena format: "Deck" block, blank line, "Sideboard" block; lines are "qty Name (SET) Num"
     const fmt_line = ({ card, qty }) => {
       const set = (card.set || 'UNK').toUpperCase();
       const num = card.collector_number || '1';
       return `${qty} ${card.name} (${set}) ${num}`;
     };
-    if (nonlands.length) {
-      text += 'Deck\n';
-      nonlands.sort((a,b) => a.card.name.localeCompare(b.card.name)).forEach(e => { text += fmt_line(e) + '\n'; });
-    }
-    if (lands.length) {
-      text += '\nSideboard\n'; // Arena uses blank line then sideboard for lands in some views
-      lands.sort((a,b) => a.card.name.localeCompare(b.card.name)).forEach(e => { text += fmt_line(e) + '\n'; });
+    const byName = (a, b) => a.card.name.localeCompare(b.card.name);
+    let text = 'Deck\n';
+    [...entries].sort(byName).forEach(e => { text += fmt_line(e) + '\n'; });
+    if (sideEntries.length) {
+      text += '\nSideboard\n';
+      sideEntries.forEach(e => { text += fmt_line(e) + '\n'; });
     }
     return text.trim();
   }
@@ -2268,25 +2417,61 @@ function showImportReport(notFound) {
   document.getElementById('importReportModal').style.display = 'flex';
 }
 
-async function importDeck(text) {
-  const lines = text.split('\n').filter(l => l.trim() && !l.trim().startsWith('//'));
-  const parsed = [];
+// Parse pasted deck text into [{ qty, name, zone: 'main' | 'side' }].
+// Understands: "Deck"/"Sideboard" headers (Arena, Moxfield, Archidekt), "SB: 2 Card" lines (MTGO),
+// "4x Card", Arena "(SET) 123" suffixes, and the MTGO blank-line convention (see below).
+function parseDeckText(text) {
+  const cards = [];
+  let zone = 'main';
+  let explicit = false;     // saw a header / "SB:" marker
+  let hasComment = false;   // saw "//" or "#" comment lines (our own export uses them)
+  let block = 0, blockHasCards = false;
 
-  for (const line of lines) {
-    const m = line.trim().match(/^(\d+)\s+(.+)$/);
-    if (m) parsed.push({ qty: parseInt(m[1]), name: m[2].trim() });
+  for (const raw of String(text).split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) { if (blockHasCards) { block++; blockHasCards = false; } continue; }
+
+    const commentHdr = line.match(/^(?:\/\/|#)\s*(sideboard|side)\s*:?$/i);
+    if (commentHdr) { zone = 'side'; explicit = true; continue; }
+    if (line.startsWith('//') || line.startsWith('#')) { hasComment = true; continue; }
+
+    if (/^(sideboard|side board|sb)\s*(\(\d+\))?\s*:?$/i.test(line)) { zone = 'side'; explicit = true; continue; }
+    if (/^(deck|main|maindeck|main deck|commander|companion)\s*(\(\d+\))?\s*:?$/i.test(line)) { zone = 'main'; explicit = true; continue; }
+
+    let body = line, lineZone = zone;
+    const sb = line.match(/^SB:\s*(.+)$/i);
+    if (sb) { body = sb[1].trim(); lineZone = 'side'; explicit = true; }
+
+    const m = body.match(/^(\d+)\s*[xX]?\s+(.+)$/);
+    if (!m) continue;
+    let name = m[2].trim()
+      .replace(/\s+\([A-Za-z0-9]{2,6}\)(?:\s+[\w-]+[★*]?)?$/, '');   // Arena: "Name (SET) 123"
+    if (!name) continue;
+    cards.push({ qty: parseInt(m[1], 10), name, zone: lineZone, block });
+    blockHasCards = true;
   }
 
+  // MTGO convention without any markers: exactly two blank-line separated blocks where the second
+  // has at most 15 cards -> it is the sideboard. (The import message shows what was detected.)
+  if (!explicit && !hasComment && cards.length && Math.max(...cards.map(c => c.block)) === 1) {
+    const second = cards.filter(c => c.block === 1);
+    if (second.reduce((s, c) => s + c.qty, 0) <= SIDEBOARD_MAX) second.forEach(c => { c.zone = 'side'; });
+  }
+  return cards.map(({ qty, name, zone }) => ({ qty, name, zone }));
+}
+
+async function importDeck(text) {
+  const parsed = parseDeckText(text);
   if (!parsed.length) { showToast('No valid cards found'); return; }
 
   showToast('Importing...', 5000);
 
-  // Merge duplicate lines (same card listed twice) by summing quantities.
-  const wanted = new Map(); // normalized name -> { name, qty }
+  // Merge duplicate lines (same card listed twice in the same zone) by summing quantities.
+  const wanted = new Map(); // zone|normalized name -> { name, qty, zone }
   for (const p of parsed) {
-    const k = normName(p.name);
+    const k = p.zone + '|' + normName(p.name);
     if (wanted.has(k)) wanted.get(k).qty += p.qty;
-    else wanted.set(k, { name: p.name, qty: p.qty });
+    else wanted.set(k, { name: p.name, qty: p.qty, zone: p.zone });
   }
   const entries = [...wanted.values()];
 
@@ -2294,20 +2479,31 @@ async function importDeck(text) {
   for (let i = 0; i < entries.length; i += 75) chunks.push(entries.slice(i, i + 75));
 
   const newDeck = {};
+  const newSide = {};
   const notFound = [];
+  const place = (zone, card, qty) => {
+    const target = zone === 'side' ? newSide : newDeck;
+    if (target[card.id]) target[card.id].qty += qty;
+    else target[card.id] = { card, qty };
+  };
 
   for (let ci = 0; ci < chunks.length; ci++) {
     const chunk = chunks[ci];
     if (ci > 0) await sleep(100); // be polite to Scryfall
-    const byKey = new Map(); // normalized requested name -> entry (for this chunk)
-    chunk.forEach(e => byKey.set(normName(e.name), e));
+    // normalized name -> entries (the same card can be wanted in main deck AND sideboard)
+    const byKey = new Map();
+    chunk.forEach(e => {
+      const k = normName(e.name);
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(e);
+    });
     const matched = new Set();
 
     try {
       const res = await fetch(`${API}/cards/collection`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifiers: chunk.map(e => ({ name: e.name.replace(/[\u2018\u2019]/g, "'") })) }),
+        body: JSON.stringify({ identifiers: [...byKey.values()].map(list => ({ name: list[0].name.replace(/[\u2018\u2019]/g, "'") })) }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -2315,25 +2511,26 @@ async function importDeck(text) {
       (data.data || []).forEach(card => {
         if (card.object !== 'card') return;
         // Match by name, not by array position: not_found entries shrink the result array.
-        let entry = null;
         for (const k of cardNameKeys(card)) {
-          if (byKey.has(k) && !matched.has(k)) { entry = byKey.get(k); matched.add(k); break; }
+          if (byKey.has(k) && !matched.has(k)) {
+            matched.add(k);
+            byKey.get(k).forEach(e => place(e.zone, card, e.qty));
+            break;
+          }
         }
-        if (!entry) return; // unmatched result: never guess a quantity
-        if (newDeck[card.id]) newDeck[card.id].qty += entry.qty;
-        else newDeck[card.id] = { card, qty: entry.qty };
       });
 
       // Anything we asked for that did not come back is reported as not found.
-      chunk.forEach(e => { if (!matched.has(normName(e.name))) notFound.push(e.name); });
+      byKey.forEach((list, k) => { if (!matched.has(k)) notFound.push(list[0].name); });
     } catch (err) {
       console.error(err);
-      chunk.forEach(e => notFound.push(e.name)); // whole batch failed
+      byKey.forEach(list => notFound.push(list[0].name)); // whole batch failed
     }
   }
 
   const count = Object.keys(newDeck).length;
-  if (!count) {
+  const sideCount = Object.values(newSide).reduce((s, e) => s + e.qty, 0);
+  if (!count && !sideCount) {
     // Nothing imported: keep the user's current deck untouched.
     showToast('Import failed: no cards found');
     if (notFound.length) showImportReport(notFound);
@@ -2341,11 +2538,15 @@ async function importDeck(text) {
   }
 
   state.deck = newDeck;
+  state.sideboard = newSide;
   state.legalityData = {};
   renderDeck();
   updateCharts();
   resetLegality();
-  showToast(`Imported ${count} unique cards`);
+  let msg = `Imported ${count} unique cards`;
+  if (sideCount) msg += `, ${sideCount} in sideboard`;
+  if (sideCount > SIDEBOARD_MAX) msg += ` (over the ${SIDEBOARD_MAX}-card limit!)`;
+  showToast(msg, sideCount > SIDEBOARD_MAX ? 4500 : 2000);
   if (notFound.length) showImportReport(notFound);
 }
 
